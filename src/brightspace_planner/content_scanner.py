@@ -86,32 +86,35 @@ def _make_absolute(href: str, base: str) -> str:
 
 def _classify_content(title: str, url: str) -> str:
     tl = title.lower()
-    if any(w in tl for w in ["lab", "exercise", "practice"]):
-        return "lab"
-    if any(w in tl for w in ["quiz", "test", "exam", "midterm", "final"]):
-        return "quiz"
-    if any(w in tl for w in ["assignment", "project", "case study", "portfolio", "report"]):
-        return "assignment"
-    if any(w in tl for w in ["discussion", "forum", "peer review"]):
-        return "discussion"
-    if any(w in tl for w in ["reading", "chapter", "article", "textbook"]):
-        return "reading"
-    if any(w in tl for w in ["lecture", "slide", "presentation", "notes", "powerpoint", "ppt"]):
-        return "lecture_notes"
-    if any(w in tl for w in ["video", "recording", "webinar"]):
-        return "video"
-    if any(w in tl for w in ["link", "resource", "reference", "website"]):
-        return "resource"
-    if any(w in tl for w in ["instruction", "guide", "how to", "tutorial"]):
-        return "instructions"
-    if any(w in tl for w in ["rubric", "criteria", "grading"]):
-        return "rubric"
-    if any(w in tl for w in ["announcement", "news", "update"]):
-        return "announcement"
-    if any(w in tl for w in ["syllabus", "outline", "schedule", "calendar"]):
+    # Order matters: check more specific terms first
+    if "syllabus" in tl or "outline" in tl or "schedule" in tl:
         return "syllabus"
-    if any(w in tl for w in ["welcome", "introduction", "overview", "getting started"]):
+    if "rubric" in tl or "grading criteria" in tl:
+        return "rubric"
+    if "lab" in tl or "exercise" in tl or "practice" in tl:
+        return "lab"
+    if "quiz" in tl or "test" in tl or "exam" in tl or "midterm" in tl or "final" in tl:
+        return "quiz"
+    if "assignment" in tl or "project" in tl or "case study" in tl or "portfolio" in tl or "report" in tl:
+        return "assignment"
+    if "discussion" in tl or "forum" in tl or "peer review" in tl:
+        return "discussion"
+    if "reading" in tl or "chapter" in tl or "article" in tl or "textbook" in tl:
+        return "reading"
+    if "lecture" in tl or "slide" in tl or "presentation" in tl or "powerpoint" in tl:
+        return "lecture_notes"
+    if "video" in tl or "recording" in tl or "webinar" in tl:
+        return "video"
+    if "instruction" in tl or "guide" in tl or "how to" in tl or "tutorial" in tl:
+        return "instructions"
+    if "announcement" in tl or "news" in tl or "update" in tl:
+        return "announcement"
+    if "welcome" in tl or "introduction" in tl or "overview" in tl or "getting started" in tl:
         return "overview"
+    if "resource" in tl or "reference" in tl or "link" in tl or "website" in tl:
+        return "resource"
+    if "note" in tl:
+        return "lecture_notes"
     return "content"
 
 
