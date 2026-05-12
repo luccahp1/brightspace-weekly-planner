@@ -321,6 +321,9 @@ def cmd_deep_scan(cfg: AppConfig):
         print("\n\n[DEEP SCAN] Cancelled by user.")
     finally:
         bs.stop()
+
+
+def cmd_dashboard(cfg: AppConfig):
     """Regenerate dashboard.html from latest weekly_due_report.json."""
     from .utils import read_json
     json_path = __import__('os').path.join(cfg.output.folder, "weekly_due_report.json")

@@ -1,11 +1,36 @@
 @echo off
 REM ============================================================
-REM  Brightspace Weekly Planner — DEEP SCAN
-REM  Expands all accordion trees and reads every content page
+REM  Brightspace Weekly Planner — Deep Content Scan
+REM  Double-click to run from Windows Explorer
 REM ============================================================
+title Brightspace Weekly Planner — Deep Content Scan
 
-echo Starting Brightspace Weekly Planner — DEEP SCAN...
-echo This will expand all accordions and visit every content page.
+echo.
+echo   ============================================
+echo     Brightspace Weekly Planner
+echo     Deep Content Scan
+echo   ============================================
+echo.
+echo   This will expand every accordion tree in every
+echo   course and read every content page. It may take
+echo   several minutes.
+echo.
+echo   A Chromium window will appear on your desktop.
 echo.
 
-start "" wsl.exe -- bash -c "cd /mnt/c/Bin/SideProjs/brightspace-weekly-planner && export PYTHONPATH=src && export DISPLAY=:0 && export WAYLAND_DISPLAY=wayland-0 && /home/lucca/.local/bin/python3.11 -m brightspace_planner.main deep-scan 2>&1; echo ''; echo '--- Deep scan complete. Press Enter to close this window.---'; read"
+if not exist "C:\Bin\SideProjs\brightspace-weekly-planner\src\brightspace_planner\main.py" (
+    echo   ERROR: Project folder not found.
+    pause
+    exit /b 1
+)
+
+wsl.exe --cd C:\Bin\SideProjs\brightspace-weekly-planner -- bash run_planner.sh deep-scan
+
+echo.
+if exist "C:\Bin\SideProjs\brightspace-weekly-planner\output\dashboard.html" (
+    echo   Opening dashboard...
+    start "" "C:\Bin\SideProjs\brightspace-weekly-planner\output\dashboard.html"
+)
+
+echo.
+pause

@@ -1,17 +1,43 @@
 @echo off
 REM ============================================================
-REM  Brightspace Weekly Planner — Double-click to run
-REM  Runs the weekly scan inside WSL (headed browser mode)
+REM  Brightspace Weekly Planner — Weekly Scan
+REM  Double-click to run from Windows Explorer
 REM ============================================================
+title Brightspace Weekly Planner — Weekly Scan
 
-echo Opening Brightspace Weekly Planner...
+echo.
+echo   ============================================
+echo     Brightspace Weekly Planner
+echo     Weekly Scan
+echo   ============================================
+echo.
+echo   The scan will open a Chromium window on your
+echo   desktop via WSLg. If your session has expired
+echo   you will be asked to log in and complete MFA.
+echo.
 
-REM Launch WSL in a new terminal window with the scan command.
-REM The browser will appear on your desktop via WSLg.
-start "" wsl.exe -- bash -c "cd /mnt/c/Bin/SideProjs/brightspace-weekly-planner && export PYTHONPATH=src && export DISPLAY=:0 && export WAYLAND_DISPLAY=wayland-0 && /home/lucca/.local/bin/python3.11 -m brightspace_planner.main scan 2>&1; echo ''; echo '--- Scan complete. Press Enter to close this window.---'; read"
-
-REM After a short delay, open the dashboard in the default browser
-ping -n 6 127.0.0.1 >nul 2>&1
-if exist "C:\Bin\SideProjs\brightspace-weekly-planner\output\dashboard.html" (
-    start "" "C:\Bin\SideProjs\brightspace-weekly-planner\output\dashboard.html"
+if not exist "C:\Bin\SideProjs\brightspace-weekly-planner\src\brightspace_planner\main.py" (
+    echo   ERROR: Project folder not found.
+    echo   Make sure this .bat file is in the same folder
+    echo   as the brightspace-weekly-planner project.
+    echo.
+    pause
+    exit /b 1
 )
+
+echo   Starting scan...
+echo.
+
+wsl.exe --cd C:\Bin\SideProjs\brightspace-weekly-planner -- bash run_planner.sh scan
+
+echo.
+if exist "C:\Bin\SideProjs\brightspace-weekly-planner\output\dashboard.html" (
+    echo   Opening dashboard...
+    start "" "C:\Bin\SideProjs\brightspace-weekly-planner\output\dashboard.html"
+) else (
+    echo   NOTE: dashboard.html was not created.
+    echo   Check the output above for errors.
+)
+
+echo.
+pause
