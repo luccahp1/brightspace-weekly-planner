@@ -1,0 +1,43 @@
+# NEVER commit real secrets or local data
+
+# Environment
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# Secrets
+secrets/
+*.key
+*.pem
+
+# Local browser profile (contains session cookies)
+.local_browser_profile/
+
+# Output data (contains personal course info)
+output/
+
+# Playwright
+test-results/
+playwright-report/
+screenshots/
+traces/
+*.png
+*.jpg
+*.jpeg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
+*.swp

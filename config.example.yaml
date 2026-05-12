@@ -1,0 +1,21 @@
+brightspace:
+  url: "https://www.fanshaweonline.ca/d2l/home"
+  username: ""
+  password: ""
+
+week:
+  start_date: ""  # ISO format or empty for current week Monday
+  end_date: ""    # ISO format or empty for current week Sunday
+
+output:
+  folder: "/mnt/c/Bin/SideProjs/brightspace-weekly-planner/output"
+  site_map_path: "/mnt/c/Bin/SideProjs/brightspace-weekly-planner/output/brightspace_site_map.json"
+
+auth:
+  mode: "persistent_profile"
+  playwright_profile_dir: "/mnt/c/Bin/SideProjs/brightspace-weekly-planner/.local_browser_profile"
+  storage_state_path: "/mnt/c/Bin/SideProjs/brightspace-weekly-planner/secrets/brightspace_storage_state.json"
+
+browser:
+  headless: false
+  slow_mo_ms: 0
