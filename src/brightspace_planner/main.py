@@ -202,7 +202,125 @@ def cmd_scan(cfg: AppConfig):
         bs.stop()
 
 
-def cmd_dashboard(cfg: AppConfig):
+def cmd_deep_scan(cfg: AppConfig):
+    """Deep content scan — expands all accordion trees in every course.
+
+    Reads every content page, extracts text, file attachments, and instructions.
+    Does NOT filter by week — returns ALL content found.
+    """
+    print("\n[DEEP SCAN] Starting deep content scan...")
+    print(f"  Week range: {cfg.week_start} to {cfg.week_end}")
+    print(f"  This will expand accordion trees and visit every content page.")
+    print(f"  This may take several minutes.\n")
+
+    site_map = load_site_map(cfg.output.site_map_path)
+    if site_map is None:
+        print(f"\nWARNING: No site map found at {cfg.output.site_map_path}")
+
+    bs = BrightspaceBrowser(cfg)
+    try:
+        ctx = bs.start()
+        pg = bs.get_page()
+        if pg is None:
+            print("ERROR: No browser page available.")
+            sys.exit(1)
+
+        pg.goto(cfg.brightspace.url, wait_until="domcontentloaded", timeout=30000)
+        current_url = pg.url
+        if "/d2l/" not in current_url:
+            print(f"\nWARNING: Not on Brightspace ({current_url})")
+            print("Your session may have expired. Run: python -m brightspace_planner.main auth")
+            sys.exit(1)
+
+        print(f"  Logged in, on: {current_url}\n")
+
+        report = ScanReport(
+            week_start=cfg.week_start.isoformat(),
+            week_end=cfg.week_end.isoformat(),
+            last_checked=now_iso(),
+            auth_mode_used=cfg.auth.mode,
+            courses_checked=[],
+            items_due=[],
+            unclear_items=[],
+            errors=[],
+        )
+
+        today_d = date.today()
+        base_url = cfg.brightspace.url
+
+        for course in (site_map.courses if site_map else []):
+            report.courses_checked.append(course.course_name or "Unknown")
+            course_name = course.course_name or "Unknown"
+            print(f"\n  === {course_name} ===")
+
+            try:
+                items = scan_course(page=pg, course=course, week_start=cfg.week_start, week_end=cfg.week_end, base_url=base_url)
+                for item in items:
+                    p = priority_from_due_date(item.get("due_date", ""), today_d)
+                    p2 = priority_from_type(item.get("type", ""))
+                    item["priority"] = "HIGH" if "HIGH" in (p, p2) else (p2 if p2 != "MEDIUM" else p)
+                    item.setdefault("confidence", "medium")
+                    item.setdefault("requirements", [])
+                    item.setdefault("attachments", [])
+                    item.setdefault("warnings", [])
+                    item.setdefault("summary", "")
+                    item.setdefault("estimated_time", "")
+                    item.setdefault("difficulty", "")
+                    item.setdefault("rubric_summary", "")
+                    item.setdefault("submission_instructions", "")
+                    report.items_due.append(item)
+                print(f"  Total items: {len(items)}")
+
+            except Exception as e:
+                err = f"Error scanning {course_name}: {e}"
+                print(f"  ERROR: {err}")
+                report.errors.append(err)
+
+        # Content-only deep scan pass — expand all accordions and read every page
+        all_content_items: list[dict] = []
+        for course in (site_map.courses if site_map else []):
+            course_name = course.course_name or "Unknown"
+            print(f"\n  Deep content: {course_name}")
+            try:
+                content_items = scan_course_content_deep(
+                    pg, course, cfg.week_start, cfg.week_end, base_url
+                )
+                all_content_items.extend(content_items)
+                print(f"  Found {len(content_items)} content items")
+
+                for ci in content_items:
+                    ci.setdefault("priority", "LOW")
+                    ci.setdefault("confidence", "medium")
+                    ci.setdefault("warnings", [])
+                    report.items_due.append(ci)
+            except Exception as e:
+                print(f"  ERROR: {e}")
+                report.errors.append(f"Content deep scan error for {course_name}: {e}")
+
+        report.items_due.sort(key=lambda x: x.get("due_date", ""))
+
+        paths = write_all_reports(cfg, report)
+        dash_path = write_dashboard(cfg, report.to_dict())
+
+        n_content = sum(1 for i in report.items_due if i.get("content_type") == "content_page")
+        n_files = sum(len(i.get("attachments", [])) for i in report.items_due)
+        n_high = sum(1 for i in report.items_due if i.get("priority") == "HIGH")
+
+        print(f"\n\n[DEEP SCAN] Complete!")
+        print(f"  Total items: {len(report.items_due)}")
+        print(f"  Content pages: {n_content}")
+        print(f"  File attachments found: {n_files}")
+        print(f"  HIGH priority: {n_high}")
+        print(f"  Errors: {len(report.errors)}")
+        print(f"  Markdown: {paths['markdown']}")
+        print(f"  JSON:     {paths['json']}")
+        print(f"  Dashboard: {dash_path}")
+        print(f"  Run log:  {paths['run_log']}")
+
+    except KeyboardInterrupt:
+        print("\n\n[DEEP SCAN] Cancelled by user.")
+    finally:
+        bs.stop()
     """Regenerate dashboard.html from latest weekly_due_report.json."""
     from .utils import read_json
     json_path = __import__('os').path.join(cfg.output.folder, "weekly_due_report.json")
@@ -225,6 +343,7 @@ def main():
         print("  auth           Open browser for manual login/MFA")
         print("  sample-report  Generate reports from fake data (no Brightspace)")
         print("  scan           Scan Brightspace for due work this week")
+        print("  deep-scan      Deep content scan — expand all accordions, read every page")
         print("  dashboard      Regenerate dashboard.html from latest JSON")
         print()
         print("Options:")
@@ -242,6 +361,7 @@ def main():
         "auth": cmd_auth,
         "sample-report": cmd_sample_report,
         "scan": cmd_scan,
+        "deep-scan": cmd_deep_scan,
         "dashboard": cmd_dashboard,
     }
 

@@ -15,6 +15,11 @@ from .models import ScanReport, DueItem, CourseEntry
 from .site_map import load_site_map
 from .safety import is_unsafe_url
 from .utils import now_iso, priority_from_due_date, priority_from_type
+from .content_scanner import (
+    scan_course_content_deep,
+    scan_course_calendar,
+    scan_course_announcements,
+)
 
 logger = logging.getLogger("brightspace_planner")
 
@@ -242,7 +247,7 @@ def _items_in_week(items: list[dict], week_start: date, week_end: date) -> list[
     return result
 
 
-def scan_course(page: Page, course: CourseEntry, week_start: date, week_end: date) -> list[dict]:
+def scan_course(page: Page, course: CourseEntry, week_start: date, week_end: date, base_url: str) -> list[dict]:
     """Scan a single course for due items. Returns list of item dicts."""
     items: list[dict] = []
     course_name = course.course_name or "Unknown"
@@ -281,13 +286,50 @@ def scan_course(page: Page, course: CourseEntry, week_start: date, week_end: dat
             page.goto(course.discussions_url, wait_until="domcontentloaded", timeout=20000)
             time.sleep(1)
             disc_items = _extract_discussion_items(page, course_name, course_code)
-            # Discussions without dates go to unclear_items later
             items.extend(disc_items)
             logger.info("  Discussions: %d topics found", len(disc_items))
         except PWTimeout:
             logger.warning("  Timeout loading discussions for %s", course_name)
         except Exception as e:
             logger.error("  Error loading discussions for %s: %s", course_name, e)
+
+    # 4. Deep content scan — expand all accordion trees
+    try:
+        content_items = scan_course_content_deep(page, course, week_start, week_end, base_url)
+        # Only include content items that have a due date in our week,
+        # or that have attachments (files to download),
+        # or that are classified as important types
+        for ci in content_items:
+            if ci.get("due_date") and ci["due_date"] in [i.get("due_date") for i in items]:
+                # Already have this from dropbox/quiz, skip duplicate
+                continue
+            if ci.get("in_current_week"):
+                items.append(ci)
+            elif ci.get("attachments"):
+                # Has file attachments — always include
+                items.append(ci)
+            elif ci.get("type") in ("reading", "lecture_notes", "instructions", "rubric", "syllabus"):
+                # Important content types — include for review
+                items.append(ci)
+        logger.info("  Content scan: %d items extracted, %d added to report", len(content_items), len([i for i in items if i.get("content_type") == "content_page"]))
+    except Exception as e:
+        logger.error("  Error in content scan for %s: %s", course_name, e)
+
+    # 5. Calendar events
+    try:
+        cal_items = scan_course_calendar(page, course, week_start, week_end)
+        items.extend(cal_items)
+        logger.info("  Calendar: %d events in week", len(cal_items))
+    except Exception as e:
+        logger.error("  Error in calendar scan for %s: %s", course_name, e)
+
+    # 6. Announcements
+    try:
+        ann_items = scan_course_announcements(page, course)
+        items.extend(ann_items)
+        logger.info("  Announcements: %d found", len(ann_items))
+    except Exception as e:
+        logger.error("  Error in announcements scan for %s: %s", course_name, e)
 
     return items
 
@@ -315,7 +357,7 @@ def run_scan(cfg: AppConfig, page: Page, site_map: Any, auth_mode: str) -> ScanR
     for course in site_map.courses:
         report.courses_checked.append(course.course_name or "Unknown")
         try:
-            items = scan_course(page, course, cfg.week_start, cfg.week_end)
+            items = scan_course(page, course, cfg.week_start, cfg.week_end, base_url)
             for item in items:
                 # Compute priority
                 p = priority_from_due_date(item.get("due_date", ""), today_d)
