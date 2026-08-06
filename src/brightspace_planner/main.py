@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import traceback
 from datetime import date, datetime
+from pathlib import Path
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.table import Table
 
 from .config import load_config
 from .models import ScanReport
@@ -13,62 +20,121 @@ from .site_map import load_site_map, get_example_site_map, save_site_map
 from .report_writer import write_all_reports
 from .dashboard_writer import write_dashboard
 from .browser_client import BrightspaceBrowser
-from .scanner import run_scan
+from .scanner import run_scan, scan_course
+from .content_scanner import scan_course_content_deep
 from .auth import run_auth
-from .utils import now_iso, today_iso, ensure_dir
+from .utils import now_iso, today_iso, ensure_dir, append_log, priority_from_due_date, priority_from_type
 
 logger = logging.getLogger("brightspace_planner")
+console = Console()
 
 
-def _setup_logging(verbose: bool = False):
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+def _write_error_log(cfg, error_msg: str, tb: str = ""):
+    """Write errors to a dedicated error log file for debugging."""
+    ensure_dir(cfg.output.folder)
+    error_path = str(Path(cfg.output.folder) / "error_log.txt")
+    ts = now_iso()
+    with open(error_path, "a", encoding="utf-8") as f:
+        f.write(f"[{ts}] {error_msg}\n")
+        if tb:
+            f.write(f"  Traceback:\n{tb}\n")
+        f.write("\n")
+
+
+def _print_banner():
+    console.print()
+    console.print(Panel.fit(
+        "[bold cyan]Brightspace Weekly Planner[/bold cyan]",
+        border_style="cyan"
+    ))
+
+
+def _print_error(cfg, msg: str, tb: str = ""):
+    console.print(f"  [red]ERROR:[/red] {msg}")
+    _write_error_log(cfg, msg, tb)
+
+
+def _print_success(cfg, report, paths):
+    n_high = sum(1 for i in report.items_due if i.get("priority") == "HIGH")
+    n_med = sum(1 for i in report.items_due if i.get("priority") == "MEDIUM")
+    n_low = sum(1 for i in report.items_due if i.get("priority") == "LOW")
+    n_files = sum(len(i.get("attachments", [])) for i in report.items_due)
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_row("Items found:", str(len(report.items_due)))
+    table.add_row("  [red]High[/red]", str(n_high))
+    table.add_row("  [yellow]Medium[/yellow]", str(n_med))
+    table.add_row("  [green]Low[/green]", str(n_low))
+    table.add_row("File attachments:", str(n_files))
+    table.add_row("Errors:", str(len(report.errors)))
+
+    console.print()
+    console.print(Panel(
+        table,
+        title="[green]Scan Complete[/green]",
+        border_style="green"
+    ))
+
+    console.print(f"  [dim]Reports:[/dim]")
+    console.print(f"    {paths['markdown']}")
+    console.print(f"    {paths['json']}")
+    console.print(f"    {paths['run_log']}")
+
+    if report.errors:
+        console.print()
+        console.print(f"  [yellow]⚠ {len(report.errors)} error(s) logged to error_log.txt[/yellow]")
 
 
 def cmd_gui_test(cfg: AppConfig):
     """Open headed Chromium through WSLg and navigate to Brightspace."""
     from .browser_client import open_brightspace
 
-    print("\n[GUI TEST] Starting headed Chromium...")
-    print(f"  BRIGHTSPACE_URL: {cfg.brightspace.url}")
-    print(f"  HEADLESS: {cfg.browser.headless}")
-    print(f"  DISPLAY: {__import__('os').environ.get('DISPLAY', 'not set')}")
-    print()
+    _print_banner()
+    console.print(f"  [dim]URL:[/dim] {cfg.brightspace.url}")
+    console.print(f"  [dim]Headless:[/dim] {cfg.browser.headless}")
+    console.print()
 
     bs, pg = open_brightspace(cfg)
     try:
         if pg:
-            print(f"  Browser opened successfully!")
-            print(f"  Current URL: {pg.url}")
-            print(f"  Title: {pg.title()}")
-            print("\n  You should see a Chromium window on your Windows desktop.")
-            print("  The browser will close in 30 seconds...")
+            console.print(f"  [green]✓[/green] Browser opened!")
+            console.print(f"  [dim]URL:[/dim] {pg.url}")
+            console.print(f"  [dim]Title:[/dim] {pg.title()}")
+            console.print()
+            console.print("  [yellow]You should see a Chromium window on your Windows desktop.[/yellow]")
+            console.print("  [dim]Closing in 30 seconds...[/dim]")
             import time
             time.sleep(30)
         else:
-            print("ERROR: No browser page was created.")
+            _print_error(cfg, "No browser page was created.")
     finally:
         bs.stop()
-    print("[GUI TEST] Done.")
+    console.print("  [dim]Done.[/dim]")
 
 
 def cmd_auth(cfg: AppConfig):
-    """Open browser for manual login/MFA."""
+    """Open headed Chromium, let user manually log in and complete MFA."""
+    _print_banner()
+    console.print()
+    console.print(f"  [dim]URL:[/dim] {cfg.brightspace.url}")
+    console.print(f"  [dim]Profile:[/dim] {cfg.auth.playwright_profile_dir}")
+    console.print()
+    console.print("  [yellow]A Chromium window will appear on your Windows desktop.[/yellow]")
+    console.print("  [yellow]Please log in and complete MFA if required.[/yellow]")
+    console.print()
+
     success = run_auth(cfg)
     if success:
-        print("\nAuth complete. You can now run scan.")
+        console.print("\n  [green]✓[/green] Auth complete. You can now run the scan.")
     else:
-        print("\nAuth was not confirmed. You may try again.")
+        console.print("\n  [red]✗[/red] Auth was not confirmed. You may try again.")
         sys.exit(1)
 
 
 def cmd_sample_report(cfg: AppConfig):
     """Generate reports from sample data without Brightspace."""
-    print("\n[SAMPLE REPORT] Generating from fake data...\n")
+    _print_banner()
+    console.print("  [dim]Generating from sample data...[/dim]\n")
 
     today_d = date.today()
     sample_data = {
@@ -83,7 +149,7 @@ def cmd_sample_report(cfg: AppConfig):
                 "course_code": "SYST-3040",
                 "title": "Assignment 3: UML Diagrams",
                 "type": "assignment",
-                "due_date": (today_d).isoformat(),
+                "due_date": today_d.isoformat(),
                 "priority": "HIGH",
                 "status": "Not submitted",
                 "link": "https://www.fanshaweonline.ca/d2l/lms/assignments/view.d2l",
@@ -102,7 +168,7 @@ def cmd_sample_report(cfg: AppConfig):
                 "course_code": "COMM-3025",
                 "title": "Discussion 5: Peer Review",
                 "type": "discussion",
-                "due_date": (today_d).isoformat(),
+                "due_date": today_d.isoformat(),
                 "priority": "HIGH",
                 "status": "",
                 "link": "https://www.fanshaweonline.ca/d2l/le/3025/discussions/",
@@ -113,7 +179,7 @@ def cmd_sample_report(cfg: AppConfig):
                 "submission_instructions": "Post in Discussion forum.",
                 "attachments": [],
                 "rubric_summary": "",
-                "warnings":["Discussion post required, not just a dropbox."],
+                "warnings": ["Discussion post required, not just a dropbox."],
                 "confidence": "high",
             },
             {
@@ -121,7 +187,7 @@ def cmd_sample_report(cfg: AppConfig):
                 "course_code": "MGMT-2001",
                 "title": "Quiz 4: Ch 7-9",
                 "type": "quiz",
-                "due_date": (today_d).isoformat(),
+                "due_date": today_d.isoformat(),
                 "priority": "MEDIUM",
                 "status": "",
                 "link": "https://www.fanshaweonline.ca/d2l/lms/quizzing/",
@@ -146,93 +212,86 @@ def cmd_sample_report(cfg: AppConfig):
     paths = write_all_reports(cfg, report)
     dash_path = write_dashboard(cfg, sample_data)
 
-    print(f"  Markdown report: {paths['markdown']}")
-    print(f"  JSON report:     {paths['json']}")
-    print(f"  Run log:         {paths['run_log']}")
-    print(f"  Dashboard:       {dash_path}")
-    print("\n[SAMPLE REPORT] Done.")
+    console.print(f"  [green]✓[/green] Reports generated!")
+    console.print(f"    {paths['markdown']}")
+    console.print(f"    {paths['json']}")
+    console.print(f"    {dash_path}")
+    console.print()
 
 
 def cmd_scan(cfg: AppConfig):
     """Scan Brightspace for due work this week using persistent profile."""
-    print("\n[SCAN] Starting weekly scan...")
-    print(f"  Week: {cfg.week_start} to {cfg.week_end}")
+    _print_banner()
+    console.print(f"  [dim]Week:[/dim] {cfg.week_start} to {cfg.week_end}")
+    console.print()
 
-    # Load site map
     site_map = load_site_map(cfg.output.site_map_path)
     if site_map is None:
-        print(f"\nWARNING: No site map found at {cfg.output.site_map_path}")
-        print("Run discovery first, or the scan may be limited.\n")
+        console.print(f"  [yellow]⚠[/yellow] No site map found. Limited scanning.")
 
     bs = BrightspaceBrowser(cfg)
     try:
         ctx = bs.start()
         pg = bs.get_page()
         if pg is None:
-            print("ERROR: No browser page available.")
+            _print_error(cfg, "No browser page available.")
             sys.exit(1)
 
-        # Check if we're on Brightspace
         pg.goto(cfg.brightspace.url, wait_until="domcontentloaded", timeout=30000)
         current_url = pg.url
         if "/d2l/" not in current_url:
-            print(f"\nWARNING: Current URL {current_url} does not look like Brightspace.")
-            print("Your session may have expired. Run: python -m brightspace_planner.main auth")
+            _print_error(cfg, f"Not on Brightspace ({current_url}). Session may have expired.")
+            console.print("  [yellow]Run Login.bat to re-authenticate.[/yellow]")
             sys.exit(1)
 
-        print(f"  Logged in, on: {current_url}")
+        console.print(f"  [green]✓[/green] Logged in: {current_url}")
+        console.print()
+        console.print("  [dim]Scanning courses...[/dim]")
 
         report = run_scan(cfg, pg, site_map, cfg.auth.mode)
 
         paths = write_all_reports(cfg, report)
         dash_path = write_dashboard(cfg, report.to_dict())
 
-        print(f"\n  Items due: {len(report.items_due)}")
-        print(f"  HIGH: {sum(1 for i in report.items_due if i.get('priority') == 'HIGH')}")
-        print(f"  Errors: {len(report.errors)}")
-        print(f"  Markdown: {paths['markdown']}")
-        print(f"  JSON:     {paths['json']}")
-        print(f"  Dashboard: {dash_path}")
-        print(f"  Run log:  {paths['run_log']}")
-        print("\n[SCAN] Done.")
+        _print_success(cfg, report, paths)
 
     except KeyboardInterrupt:
-        print("\n\n[SCAN] Cancelled by user.")
+        console.print("\n  [yellow]Cancelled by user.[/yellow]")
+    except Exception as e:
+        tb = traceback.format_exc()
+        _print_error(cfg, str(e), tb)
+        console.print("  [dim]Check output/error_log.txt for details.[/dim]")
     finally:
         bs.stop()
 
 
 def cmd_deep_scan(cfg: AppConfig):
-    """Deep content scan — expands all accordion trees in every course.
-
-    Reads every content page, extracts text, file attachments, and instructions.
-    Does NOT filter by week — returns ALL content found.
-    """
-    print("\n[DEEP SCAN] Starting deep content scan...")
-    print(f"  Week range: {cfg.week_start} to {cfg.week_end}")
-    print(f"  This will expand accordion trees and visit every content page.")
-    print(f"  This may take several minutes.\n")
+    """Deep content scan — expands all accordion trees in every course."""
+    _print_banner()
+    console.print(f"  [dim]Week:[/dim] {cfg.week_start} to {cfg.week_end}")
+    console.print()
 
     site_map = load_site_map(cfg.output.site_map_path)
     if site_map is None:
-        print(f"\nWARNING: No site map found at {cfg.output.site_map_path}")
+        console.print(f"  [yellow]⚠[/yellow] No site map found. Limited scanning.")
 
     bs = BrightspaceBrowser(cfg)
     try:
         ctx = bs.start()
         pg = bs.get_page()
         if pg is None:
-            print("ERROR: No browser page available.")
+            _print_error(cfg, "No browser page available.")
             sys.exit(1)
 
         pg.goto(cfg.brightspace.url, wait_until="domcontentloaded", timeout=30000)
         current_url = pg.url
         if "/d2l/" not in current_url:
-            print(f"\nWARNING: Not on Brightspace ({current_url})")
-            print("Your session may have expired. Run: python -m brightspace_planner.main auth")
+            _print_error(cfg, f"Not on Brightspace ({current_url}). Session may have expired.")
+            console.print("  [yellow]Run Login.bat to re-authenticate.[/yellow]")
             sys.exit(1)
 
-        print(f"  Logged in, on: {current_url}\n")
+        console.print(f"  [green]✓[/green] Logged in: {current_url}")
+        console.print()
 
         report = ScanReport(
             week_start=cfg.week_start.isoformat(),
@@ -248,13 +307,21 @@ def cmd_deep_scan(cfg: AppConfig):
         today_d = date.today()
         base_url = cfg.brightspace.url
 
+        # Phase 1: Standard scan
+        console.print("[bold]Phase 1:[/bold] Standard scan")
+        console.print()
+
         for course in (site_map.courses if site_map else []):
-            report.courses_checked.append(course.course_name or "Unknown")
             course_name = course.course_name or "Unknown"
-            print(f"\n  === {course_name} ===")
+            report.courses_checked.append(course_name)
+            console.print(f"  [cyan]▸[/cyan] {course_name}")
 
             try:
-                items = scan_course(page=pg, course=course, week_start=cfg.week_start, week_end=cfg.week_end, base_url=base_url)
+                items = scan_course(
+                    page=pg, course=course,
+                    week_start=cfg.week_start, week_end=cfg.week_end,
+                    base_url=base_url,
+                )
                 for item in items:
                     p = priority_from_due_date(item.get("due_date", ""), today_d)
                     p2 = priority_from_type(item.get("type", ""))
@@ -269,56 +336,56 @@ def cmd_deep_scan(cfg: AppConfig):
                     item.setdefault("rubric_summary", "")
                     item.setdefault("submission_instructions", "")
                     report.items_due.append(item)
-                print(f"  Total items: {len(items)}")
-
+                n_high = sum(1 for i in items if i.get("priority") == "HIGH")
+                console.print(f"      [dim]{len(items)} items[/dim] ({n_high} HIGH)")
             except Exception as e:
-                err = f"Error scanning {course_name}: {e}"
-                print(f"  ERROR: {err}")
-                report.errors.append(err)
+                tb = traceback.format_exc()
+                _print_error(cfg, f"Error scanning {course_name}: {e}", tb)
+                report.errors.append(f"Error scanning {course_name}: {e}")
 
-        # Content-only deep scan pass — expand all accordions and read every page
-        all_content_items: list[dict] = []
+        # Phase 2: Deep content scan
+        console.print()
+        console.print("[bold]Phase 2:[/bold] Deep content scan")
+        console.print()
+
         for course in (site_map.courses if site_map else []):
             course_name = course.course_name or "Unknown"
-            print(f"\n  Deep content: {course_name}")
+            console.print(f"  [cyan]▸[/cyan] {course_name}")
+
             try:
                 content_items = scan_course_content_deep(
                     pg, course, cfg.week_start, cfg.week_end, base_url
                 )
-                all_content_items.extend(content_items)
-                print(f"  Found {len(content_items)} content items")
-
+                n_added = 0
                 for ci in content_items:
                     ci.setdefault("priority", "LOW")
                     ci.setdefault("confidence", "medium")
                     ci.setdefault("warnings", [])
                     report.items_due.append(ci)
+                    n_added += 1
+                n_files = sum(len(ci.get("attachments", [])) for ci in content_items)
+                console.print(f"      [dim]{n_added} pages[/dim] ({n_files} files)")
             except Exception as e:
-                print(f"  ERROR: {e}")
-                report.errors.append(f"Content deep scan error for {course_name}: {e}")
+                tb = traceback.format_exc()
+                _print_error(cfg, f"Content scan error for {course_name}: {e}", tb)
+                report.errors.append(f"Content scan error for {course_name}: {e}")
 
         report.items_due.sort(key=lambda x: x.get("due_date", ""))
+
+        console.print()
+        console.print("[bold]Writing reports...[/bold]")
 
         paths = write_all_reports(cfg, report)
         dash_path = write_dashboard(cfg, report.to_dict())
 
-        n_content = sum(1 for i in report.items_due if i.get("content_type") == "content_page")
-        n_files = sum(len(i.get("attachments", [])) for i in report.items_due)
-        n_high = sum(1 for i in report.items_due if i.get("priority") == "HIGH")
-
-        print(f"\n\n[DEEP SCAN] Complete!")
-        print(f"  Total items: {len(report.items_due)}")
-        print(f"  Content pages: {n_content}")
-        print(f"  File attachments found: {n_files}")
-        print(f"  HIGH priority: {n_high}")
-        print(f"  Errors: {len(report.errors)}")
-        print(f"  Markdown: {paths['markdown']}")
-        print(f"  JSON:     {paths['json']}")
-        print(f"  Dashboard: {dash_path}")
-        print(f"  Run log:  {paths['run_log']}")
+        _print_success(cfg, report, paths)
 
     except KeyboardInterrupt:
-        print("\n\n[DEEP SCAN] Cancelled by user.")
+        console.print("\n  [yellow]Cancelled by user.[/yellow]")
+    except Exception as e:
+        tb = traceback.format_exc()
+        _print_error(cfg, str(e), tb)
+        console.print("  [dim]Check output/error_log.txt for details.[/dim]")
     finally:
         bs.stop()
 
@@ -326,37 +393,45 @@ def cmd_deep_scan(cfg: AppConfig):
 def cmd_dashboard(cfg: AppConfig):
     """Regenerate dashboard.html from latest weekly_due_report.json."""
     from .utils import read_json
-    json_path = __import__('os').path.join(cfg.output.folder, "weekly_due_report.json")
+    json_path = str(Path(cfg.output.folder) / "weekly_due_report.json")
     data = read_json(json_path)
     if data is None:
-        print(f"No JSON report found at {json_path}")
-        print("Run scan or sample-report first.")
+        console.print(f"  [yellow]No JSON report found.[/yellow]")
+        console.print("  [dim]Run a scan first.[/dim]")
         sys.exit(1)
     path = write_dashboard(cfg, data)
-    print(f"Dashboard regenerated: {path}")
+    console.print(f"  [green]✓[/green] Dashboard: {path}")
 
 
 def main():
     """CLI entry point."""
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print("Usage: python -m brightspace_planner.main <command> [options]")
-        print()
-        print("Commands:")
-        print("  gui-test       Open headed Chromium, verify browser appears")
-        print("  auth           Open browser for manual login/MFA")
-        print("  sample-report  Generate reports from fake data (no Brightspace)")
-        print("  scan           Scan Brightspace for due work this week")
-        print("  deep-scan      Deep content scan — expand all accordions, read every page")
-        print("  dashboard      Regenerate dashboard.html from latest JSON")
-        print()
-        print("Options:")
-        print("  --verbose / -v  Enable debug logging")
+        console.print()
+        console.print(Panel.fit(
+            "[bold cyan]Brightspace Weekly Planner[/bold cyan]",
+            border_style="cyan"
+        ))
+        console.print()
+        console.print("  [bold]Commands:[/bold]")
+        console.print("    [cyan]gui-test[/cyan]       Open headed Chromium, verify browser")
+        console.print("    [cyan]auth[/cyan]           Open browser for manual login/MFA")
+        console.print("    [cyan]sample-report[/cyan]  Generate reports from fake data")
+        console.print("    [cyan]scan[/cyan]           Scan Brightspace for due work this week")
+        console.print("    [cyan]deep-scan[/cyan]      Deep content scan (all accordions)")
+        console.print("    [cyan]dashboard[/cyan]      Regenerate dashboard.html")
+        console.print()
+        console.print("  [dim]Options: --verbose / -v[/dim]")
+        console.print()
         sys.exit(0)
 
     command = sys.argv[1]
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
 
-    _setup_logging(verbose)
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    else:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+
     cfg = load_config()
 
     commands = {
@@ -370,8 +445,8 @@ def main():
 
     handler = commands.get(command)
     if handler is None:
-        print(f"Unknown command: {command}")
-        print(f"Available: {', '.join(commands)}")
+        console.print(f"  [red]Unknown command:[/red] {command}")
+        console.print(f"  [dim]Available:[/dim] {', '.join(commands)}")
         sys.exit(1)
 
     handler(cfg)

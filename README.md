@@ -40,9 +40,15 @@ printed to logs, or uploaded anywhere.
 
 - Python 3.11+
 - Playwright Chromium (`playwright install chromium`)
-- WSLg (Windows 11 GUI support for WSL) — needed for headed browser
+- For the `.bat` launchers only: WSL with a distro installed, plus WSLg for the
+  headed browser. The launchers are thin wrappers that call
+  `wsl.exe -- bash run_planner.sh`, so on a machine with no WSL distro they fail
+  immediately. The Python package itself has no WSL dependency and runs fine on
+  native Windows, Linux and macOS — see below.
 
 ## Install
+
+Under WSL or Linux:
 
 ```bash
 cd /mnt/c/Bin/SideProjs/brightspace-weekly-planner
@@ -51,6 +57,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 ```
+
+On native Windows, skip the `.bat` files and drive the module directly:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+playwright install chromium
+$env:PYTHONPATH = "$PWD\src"
+python -m brightspace_planner.main sample-report
+```
+
+Every command in "How to Run" below works the same way once `PYTHONPATH`
+includes `src`.
 
 ## Configuration
 
